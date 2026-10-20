@@ -1,0 +1,19 @@
+# Never bake secrets or local data into the image.
+.env
+.env.*
+!.env.example
+config/sites.yaml
+data/
+reports/
+.git/
+.github/
+.venv/
+venv/
+**/__pycache__/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+tests/
+docs/
+*.md
+!README.md

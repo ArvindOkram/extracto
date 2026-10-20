@@ -1,0 +1,37 @@
+# Copy to config/sites.yaml and edit. Adding or removing a site needs no code change.
+# Before adding a site, review its terms of service and robots.txt.
+
+defaults:
+  # Identify the crawler honestly with a monitored contact address.
+  user_agent: "Extracto/0.1 (+contact: marketing-it@example.com)"
+  delay_seconds: 2.5          # between requests to the same site (plus jitter)
+  max_pages: 500
+  max_depth: 3
+  timeout_seconds: 20
+  max_bytes: 2097152          # 2 MB per page
+  exclude_patterns:           # regexes matched against path + query; sites add to these
+    - '/search(/?$|\?)'       # site search pages only, not paths like /search/docs
+    - "/login"
+    - "/cart"
+    - "/tag/"
+    - '\?page='
+    - "/calendar"
+  noise_selectors:            # CSS selectors removed before extraction
+    - ".cookie-banner"
+    - "#cookie-consent"
+
+sites:
+  - name: Competitor A
+    start_url: https://www.competitor-a.com/
+    sitemap_url: https://www.competitor-a.com/sitemap.xml
+    allow_patterns: ["^/(pricing|product|blog|features)"]
+    extractors:               # optional tracked fields (used from Phase 4)
+      pro_price:
+        selector: ".plan-pro .price"
+        type: number
+
+  - name: Competitor B
+    start_url: https://competitor-b.io/
+    render_js: true           # Playwright path arrives in Phase 8
+    max_pages: 200
+    noise_selectors: [".ticker"]

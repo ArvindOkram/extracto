@@ -1,0 +1,22 @@
+# Render Blueprint (New -> Blueprint). Free web service only; the database is external
+# (Neon/Supabase) and the schedule is external (cron-job.org). See docs/deploy-render.md.
+# Secret values are NOT stored here: `sync: false` makes Render prompt for them.
+services:
+  - type: web
+    name: extracto
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: DATABASE_URL          # Neon/Supabase connection string
+        sync: false
+      - key: DISCORD_WEBHOOK_URL   # Discord channel webhook
+        sync: false
+      - key: EXTRACTO_API_KEY      # random value; copy it into cron-job.org and Postman
+        generateValue: true
+      - key: SITES_CONFIG          # add a Secret File named sites.yaml in the dashboard
+        value: /etc/secrets/sites.yaml
+      - key: KEEP_RAW_HTML         # ephemeral disk + small free DB: don't keep raw HTML
+        value: "false"
