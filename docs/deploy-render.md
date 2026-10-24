@@ -49,8 +49,9 @@ commit is not enough.
 
 ## 3. Neon database
 
-1. Sign up at neon.tech → **Create project**. Pick a region close to your Render region
-   (e.g. AWS US West (Oregon) for Render's Oregon region).
+1. Sign up at neon.tech → **Create project**. Pick the same region as Render: `render.yaml`
+   uses `region: singapore`, so choose **AWS Asia Pacific (Singapore)**. The region can't be
+   changed later on either service.
 2. Open **Connect** (dashboard) and copy the connection string. Prefer the **direct** (non-pooled)
    string; it looks like:
    `postgresql://<user>:<password>@ep-xxxx.<region>.aws.neon.tech/<db>?sslmode=require`

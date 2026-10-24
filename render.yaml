@@ -6,6 +6,7 @@ services:
     name: extracto
     runtime: docker
     plan: free
+    region: singapore              # keep the same region as the Neon database
     dockerfilePath: ./Dockerfile
     healthCheckPath: /healthz
     autoDeploy: true
