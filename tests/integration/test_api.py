@@ -129,6 +129,23 @@ def test_inline_patterns_and_limits(client: TestClient) -> None:
     }
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"start_url": "https://site.test/", "use_sitemap": False},
+        {"site": "Fake", "use_sitemap": False},
+    ],
+)
+def test_use_sitemap_false_skips_sitemaps(
+    client: TestClient, fake: FakeSite, body: dict[str, object]
+) -> None:
+    fake.pages["/robots.txt"] = Page(
+        body="User-agent: *\nSitemap: https://site.test/sitemap.xml\n", content_type="text/plain"
+    )
+    assert client.post("/crawl", json=body).status_code == 200
+    assert "/sitemap.xml" not in fake.paths_requested
+
+
 def test_real_run_stores_and_notifies(
     client: TestClient, settings: Settings, notifier: RecordingNotifier
 ) -> None:

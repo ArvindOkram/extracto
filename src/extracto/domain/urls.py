@@ -76,9 +76,9 @@ def normalize_url(url: str, base: str | None = None) -> str | None:
 
     host = parts.hostname.lower()
     netloc = host if port in (None, DEFAULT_PORTS[scheme]) else f"{host}:{port}"
+    # The trailing slash is kept: sites that use one redirect the slash-less form, so
+    # stripping it would cost an extra request (and crawl delay) for every page.
     path = quote(parts.path, safe="/%:@!$&'()*+,;=-._~") or "/"
-    if path != "/":
-        path = path.rstrip("/") or "/"
     query = urlencode(
         sorted(
             (k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if not _is_tracking(k)

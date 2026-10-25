@@ -235,7 +235,7 @@ flowchart LR
 |---|---|---|
 | Language | Python 3.11+ | |
 | HTTP | `httpx` | Timeouts, retries, HTTP/2, easy to control |
-| robots.txt | `urllib.robotparser` | Stdlib. Cached per site per run. |
+| robots.txt | Small RFC 9309 parser (`domain/robots.py`) | `urllib.robotparser` ignores `*`/`$` wildcards and longest-match. Cached per host per run. |
 | Sitemap | `ultimate-sitemap-parser` or small custom parser | Handles sitemap indexes |
 | HTML parsing | `selectolax` or `beautifulsoup4` | Link extraction, selectors |
 | Main text extraction | `trafilatura` | Strips nav/footer/boilerplate |
@@ -327,7 +327,7 @@ sites:
 |---|---|
 | `SMTP_HOST`, `SMTP_USER`, `SMTP_PASSWORD`, `REPORT_FROM`, `REPORT_TO` | Email delivery |
 | `SLACK_WEBHOOK_URL` | Slack delivery |
-| `ANTHROPIC_API_KEY` | Optional LLM summaries |
+| `GEMINI_API_KEY` | Optional LLM summaries |
 | `DATA_DIR` | Location of DB and raw files |
 
 ## 5. Data Model

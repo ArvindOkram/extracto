@@ -23,7 +23,8 @@ defaults:
 sites:
   - name: Competitor A
     start_url: https://www.competitor-a.com/
-    sitemap_url: https://www.competitor-a.com/sitemap.xml
+    sitemap_url: https://www.competitor-a.com/sitemap.xml   # default: Sitemap lines in robots.txt
+    # use_sitemap: false      # follow links only (for sites with huge or slow sitemaps)
     allow_patterns: ["^/(pricing|product|blog|features)"]
     extractors:               # optional tracked fields (used from Phase 4)
       pro_price:

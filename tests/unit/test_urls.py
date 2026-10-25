@@ -11,7 +11,8 @@ from extracto.domain.urls import UrlFilter, normalize_url
             "https://a.test/x?utm_source=x&id=3&gclid=1&fbclid=2&ref=hn&utm_medium=y",
             "https://a.test/x?id=3",
         ),
-        ("https://a.test/blog/", "https://a.test/blog"),
+        ("https://a.test/blog/", "https://a.test/blog/"),  # kept: avoids a redirect per page
+        ("https://a.test/blog", "https://a.test/blog"),
         ("https://a.test", "https://a.test/"),
         ("https://a.test/", "https://a.test/"),
         ("http://a.test:80/x", "http://a.test/x"),

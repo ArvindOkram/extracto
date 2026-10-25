@@ -72,6 +72,7 @@ class HttpFetcher:
         max_attempts: int = 3,
         max_retry_after: float = 120.0,
         max_delay: float = 60.0,
+        max_download_seconds: float = 120.0,
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
         rand: Callable[[], float] = random.random,
@@ -85,6 +86,7 @@ class HttpFetcher:
         self._max_attempts = max_attempts
         self._max_retry_after = max_retry_after
         self._max_delay = max_delay
+        self._max_download_seconds = max_download_seconds
         self._sleep = sleep
         self._clock = clock
         self._rand = rand
@@ -111,7 +113,14 @@ class HttpFetcher:
         etag: str | None = None,
         last_modified: str | None = None,
         html_only: bool = True,
+        max_bytes: int | None = None,
+        can_follow: Callable[[str], bool] | None = None,
     ) -> FetchResult:
+        """Fetch `url`, following on-domain redirects.
+
+        `max_bytes` overrides the fetcher's body limit for this call. `can_follow` is checked
+        for every redirect target (robots.txt applies to each hop, not just the first URL).
+        """
         start = self._clock()
         headers = {"User-Agent": self.user_agent}
         if etag:
@@ -141,10 +150,11 @@ class HttpFetcher:
                 error=error,
             )
 
+        limit = max_bytes or self.max_bytes
         current = url
         for _ in range(self._max_redirects + 1):
             try:
-                raw = self._retrying()(self._send, current, headers, html_only)
+                raw = self._retrying()(self._send, current, headers, html_only, limit)
             except _RetryableStatus as exc:
                 return result(
                     current, FetchOutcome.HTTP_ERROR, status_code=exc.status, error=str(exc)
@@ -174,6 +184,13 @@ class HttpFetcher:
                 return result(
                     current,
                     FetchOutcome.SKIPPED_OFFSITE_REDIRECT,
+                    status_code=raw.status,
+                    error=f"redirect to {target}",
+                )
+            if can_follow is not None and not can_follow(target):
+                return result(
+                    current,
+                    FetchOutcome.SKIPPED_ROBOTS,
                     status_code=raw.status,
                     error=f"redirect to {target}",
                 )
@@ -222,15 +239,15 @@ class HttpFetcher:
         self.delay_seconds = min(self.delay_seconds * 2, self._max_delay)
         log.warning("server asked us to slow down", extra={"delay_seconds": self.delay_seconds})
 
-    def _send(self, url: str, headers: dict[str, str], html_only: bool) -> _Raw:
+    def _send(self, url: str, headers: dict[str, str], html_only: bool, max_bytes: int) -> _Raw:
         self._wait_politely()
         try:
             with self._client.stream("GET", url, headers=headers) as resp:
-                return self._read(resp, html_only)
+                return self._read(resp, html_only, max_bytes)
         finally:
             self._last_request = self._clock()
 
-    def _read(self, resp: httpx.Response, html_only: bool) -> _Raw:
+    def _read(self, resp: httpx.Response, html_only: bool, max_bytes: int) -> _Raw:
         status = resp.status_code
         headers = {k.lower(): v for k, v in resp.headers.items()}
 
@@ -253,14 +270,19 @@ class HttpFetcher:
             return _Raw(status, headers, FetchOutcome.SKIPPED_NOT_HTML, error=content_type)
 
         declared = headers.get("content-length", "")
-        if declared.isdigit() and int(declared) > self.max_bytes:
+        if declared.isdigit() and int(declared) > max_bytes:
             return _Raw(status, headers, FetchOutcome.SKIPPED_TOO_LARGE)
 
         chunks: list[bytes] = []
         total = 0
+        # The client timeout only bounds the gap between chunks; also cap the whole download
+        # so a server trickling bytes can't hold the crawl forever.
+        deadline = self._clock() + self._max_download_seconds
         for chunk in resp.iter_bytes():
+            if self._clock() > deadline:
+                return _Raw(status, headers, FetchOutcome.NETWORK_ERROR, error="download too slow")
             total += len(chunk)
-            if total > self.max_bytes:
+            if total > max_bytes:
                 return _Raw(status, headers, FetchOutcome.SKIPPED_TOO_LARGE)
             chunks.append(chunk)
         return _Raw(

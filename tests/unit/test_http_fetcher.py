@@ -81,6 +81,30 @@ def test_offsite_redirect_dropped(fetcher: HttpFetcher) -> None:
 
 
 @respx.mock
+def test_redirect_to_disallowed_target_not_followed(fetcher: HttpFetcher) -> None:
+    respx.get("https://a.test/go").respond(302, headers={"location": "/private/x"})
+    private = respx.get("https://a.test/private/x").respond(200, headers=HTML, text="x")
+
+    result = fetcher.fetch("https://a.test/go", can_follow=lambda url: "/private" not in url)
+    assert result.outcome is FetchOutcome.SKIPPED_ROBOTS
+    assert not private.called
+
+
+@respx.mock
+def test_slow_download_aborted(fetcher: HttpFetcher, t: FakeTime) -> None:
+    def trickle():
+        for _ in range(5):
+            t.now += 60  # each chunk arrives a minute after the last
+            yield b"x"
+
+    respx.get("https://a.test/slow").mock(
+        return_value=httpx.Response(200, headers=HTML, content=trickle())
+    )
+    result = fetcher.fetch("https://a.test/slow")
+    assert result.outcome is FetchOutcome.NETWORK_ERROR and result.error == "download too slow"
+
+
+@respx.mock
 def test_too_many_redirects(fetcher: HttpFetcher) -> None:
     for i in range(10):
         respx.get(f"https://a.test/r{i}").respond(302, headers={"location": f"/r{i + 1}"})
@@ -161,6 +185,13 @@ def test_network_error_after_retries(fetcher: HttpFetcher) -> None:
 def test_oversized_by_content_length(fetcher: HttpFetcher) -> None:
     respx.get("https://a.test/big").respond(200, headers=HTML, content=b"x" * 1001)
     assert fetcher.fetch("https://a.test/big").outcome is FetchOutcome.SKIPPED_TOO_LARGE
+
+
+@respx.mock
+def test_max_bytes_override_per_call(fetcher: HttpFetcher) -> None:
+    respx.get("https://a.test/big").respond(200, headers=HTML, content=b"x" * 1001)
+    result = fetcher.fetch("https://a.test/big", max_bytes=2000)
+    assert result.outcome is FetchOutcome.OK and len(result.body) == 1001
 
 
 @respx.mock

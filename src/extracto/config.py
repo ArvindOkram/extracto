@@ -73,6 +73,7 @@ class SiteConfig(_Limits):
     name: str = Field(min_length=1)
     start_url: str
     sitemap_url: str | None = None
+    use_sitemap: bool = True  # false: discover pages by following links only
     allow_patterns: list[str] = []
     extra_domains: list[str] = []
     extractors: dict[str, FieldRule] = {}

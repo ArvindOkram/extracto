@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from extracto.adapters.storage.orm import Fetch, Page, Run, RunSite, Site, Snapshot, utcnow
 from extracto.domain.models import FetchOutcome, RunStatus, SiteHealth
@@ -137,6 +137,67 @@ class RunRepository:
             "errors": self.session.scalar(errors) or 0,
             "new_snapshots": self.session.scalar(snaps) or 0,
         }
+
+    def site_stats(self, run_id: int) -> list[dict[str, Any]]:
+        """Per-site breakdown of a run, in crawl order: fetch outcomes, new/updated pages."""
+        sites: dict[int, dict[str, Any]] = {}
+        rows = self.session.execute(
+            select(
+                Fetch.site_id,
+                Site.name,
+                Fetch.outcome,
+                func.count(),
+                func.min(Fetch.fetched_at),
+                func.max(Fetch.fetched_at),
+            )
+            .join(Site, Site.id == Fetch.site_id)
+            .where(Fetch.run_id == run_id)
+            .group_by(Fetch.site_id, Site.name, Fetch.outcome)
+        )
+        for site_id, name, outcome, count, first, last in rows:
+            stats = sites.setdefault(
+                site_id,
+                {"site": name, "outcomes": {}, "first_fetch_at": first, "last_fetch_at": last},
+            )
+            stats["outcomes"][FetchOutcome(outcome).value] = count
+            stats["first_fetch_at"] = min(stats["first_fetch_at"], first)
+            stats["last_fetch_at"] = max(stats["last_fetch_at"], last)
+
+        # A snapshot is an update if its page already had an earlier one, otherwise a new page.
+        prev = aliased(Snapshot)
+        earlier = (
+            select(func.count())
+            .where(prev.page_id == Snapshot.page_id, prev.id < Snapshot.id)
+            .scalar_subquery()
+        )
+        snaps = self.session.execute(
+            select(Page.site_id, earlier)
+            .select_from(Snapshot)
+            .join(Page, Page.id == Snapshot.page_id)
+            .where(Snapshot.run_id == run_id)
+        )
+        for site_id, prior in snaps:
+            if site_id in sites:
+                key = "updated_pages" if prior else "new_pages"
+                sites[site_id][key] = sites[site_id].get(key, 0) + 1
+
+        result = []
+        for stats in sorted(sites.values(), key=lambda s: s["first_fetch_at"]):
+            outcomes = stats["outcomes"]
+            result.append(
+                {
+                    **stats,
+                    "pages_fetched": sum(outcomes.values())
+                    - outcomes.get(FetchOutcome.SKIPPED_ROBOTS.value, 0),
+                    "errors": outcomes.get(FetchOutcome.HTTP_ERROR.value, 0)
+                    + outcomes.get(FetchOutcome.NETWORK_ERROR.value, 0),
+                    "skipped_robots": outcomes.get(FetchOutcome.SKIPPED_ROBOTS.value, 0),
+                    "not_modified": outcomes.get(FetchOutcome.NOT_MODIFIED.value, 0),
+                    "new_pages": stats.get("new_pages", 0),
+                    "updated_pages": stats.get("updated_pages", 0),
+                }
+            )
+        return result
 
     def close(self, run_id: int, status: RunStatus) -> Run:
         run = self.session.get_one(Run, run_id)
