@@ -1,6 +1,6 @@
 from extracto.domain.models import FetchOutcome, NotificationLevel, PageChange
 from extracto.services.crawl_service import PageResult, SiteCrawlResult
-from extracto.services.notification_service import run_failed, run_summary
+from extracto.services.notification_service import run_failed, run_interrupted, run_summary
 from extracto.services.run_service import RunOutcome
 
 
@@ -113,3 +113,13 @@ def test_failed_run() -> None:
 
 def test_failed_run_without_id() -> None:
     assert run_failed(ValueError("x")).title == "Extracto run failed"
+
+
+def test_run_interrupted() -> None:
+    n = run_interrupted(12, sites_done=23, total_sites=40, pages=512)
+    assert n.title == "Extracto run #12 was interrupted"
+    assert n.level is NotificationLevel.ERROR
+    assert "after 23 of 40 sites (512 pages)" in n.description
+    assert "POST /runs" in n.description
+    unknown_total = run_interrupted(1, sites_done=2, total_sites=None, pages=1)
+    assert "after 2 sites" in unknown_total.description

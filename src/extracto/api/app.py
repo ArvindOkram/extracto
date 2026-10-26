@@ -15,7 +15,9 @@ from __future__ import annotations
 import logging
 import secrets
 import threading
-from collections.abc import Callable
+import time
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Annotated, Any
 from urllib.parse import urlsplit
@@ -30,7 +32,7 @@ from extracto.adapters.storage.orm import utcnow
 from extracto.adapters.storage.repositories import RunRepository
 from extracto.bootstrap import Storage, build_notifier, build_run_service, build_storage
 from extracto.config import AppConfig, ConfigError, SiteConfig, load_config
-from extracto.domain.models import FetchOutcome, RunStatus
+from extracto.domain.models import FetchOutcome, Notification, RunStatus
 from extracto.domain.net import is_public_ip
 from extracto.interfaces import Fetcher, NotificationError, Notifier
 from extracto.services.crawl_service import SiteCrawlResult
@@ -38,6 +40,7 @@ from extracto.services.notification_service import (
     connectivity_check,
     deliver,
     run_failed,
+    run_interrupted,
     run_summary,
 )
 from extracto.services.run_service import RunService
@@ -50,6 +53,8 @@ MAX_DEPTH = 5
 MIN_DELAY_SECONDS = 1.0
 # A "running" run with no requests for this long is treated as dead (e.g. the host slept).
 STALE_AFTER = timedelta(minutes=20)
+# How often the startup watch re-checks runs left "running" by a previous process.
+WATCH_INTERVAL_S = 300.0
 
 
 class CrawlRequest(BaseModel):
@@ -198,9 +203,21 @@ def create_app(
     fetcher_factory: Callable[[SiteConfig], Fetcher] = fetcher_for_site,
     resolver: Callable[[str], list[str]] = resolve_host,
     notifier_factory: Callable[[Settings], Notifier | None] = build_notifier,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> FastAPI:
     settings = settings or Settings()
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        # Off the startup path: the database may be slow to wake, and /healthz must answer now.
+        app.state.watch_thread = threading.Thread(
+            target=watch_interrupted_runs, name="extracto-watch", daemon=True
+        )
+        app.state.watch_thread.start()
+        yield
+
     app = FastAPI(
+        lifespan=lifespan,
         title="Extracto API",
         version=__version__,
         description=(
@@ -210,7 +227,10 @@ def create_app(
     )
     app.state.crawl_lock = threading.Lock()
     app.state.run_thread = None
+    app.state.active_run_id = None
+    app.state.alert_thread = None
     storage_lock = threading.Lock()
+    stale_lock = threading.Lock()
     storage_holder: list[Storage] = []
 
     def storage() -> Storage:
@@ -282,16 +302,74 @@ def create_app(
         if not addresses or blocked:
             raise HTTPException(400, f"refusing to crawl private or internal address for {host!r}")
 
-    def ensure_no_active_run() -> None:
-        """409 if another run is live; mark runs that died silently (host slept) as failed."""
-        with storage().session_factory.begin() as session:
+    def total_sites() -> int | None:
+        try:
+            return len(load_config(settings.sites_config).sites)
+        except ConfigError:
+            return None
+
+    def close_stale_runs() -> tuple[list[int], list[Notification]]:
+        """Mark runs that died silently (host slept or restarted) as failed.
+
+        Returns the ids of runs that still look alive, and an alert for each run closed.
+        """
+        alive: list[int] = []
+        alerts: list[Notification] = []
+        with stale_lock, storage().session_factory.begin() as session:
             runs = RunRepository(session)
             for run in runs.running():
-                if utcnow() - runs.last_activity(run.id) > STALE_AFTER:
-                    log.warning("marking stale run as failed", extra={"run_id": run.id})
-                    runs.close(run.id, RunStatus.FAILED)
-                else:
-                    raise HTTPException(409, f"run {run.id} is still running")
+                quiet = utcnow() - runs.last_activity(run.id) > STALE_AFTER
+                if run.id == app.state.active_run_id or not quiet:
+                    alive.append(run.id)
+                    continue
+                log.warning("marking stale run as failed", extra={"run_id": run.id})
+                runs.close(run.id, RunStatus.FAILED)
+                alerts.append(
+                    run_interrupted(
+                        run.id,
+                        sites_done=len(runs.site_stats(run.id)),
+                        total_sites=total_sites(),
+                        pages=runs.progress(run.id)["pages_fetched"],
+                    )
+                )
+        return alive, alerts
+
+    def send_alerts(alerts: list[Notification]) -> None:
+        """Deliver in the background so a slow Discord never delays an API response."""
+        if not alerts:
+            return
+
+        def send() -> None:
+            notifier = notifier_or_none()
+            for alert in alerts:
+                deliver(notifier, alert)
+
+        app.state.alert_thread = threading.Thread(target=send, name="extracto-alerts", daemon=True)
+        app.state.alert_thread.start()
+
+    def watch_interrupted_runs() -> None:
+        """After a restart, alert on runs the previous process left unfinished.
+
+        Only this process runs crawls, but a run may still look alive for a while (e.g. a CLI
+        run against the same database), so each one is closed only once it has gone quiet.
+        """
+        try:
+            while True:
+                alive, alerts = close_stale_runs()
+                for alert in alerts:
+                    deliver(notifier_or_none(), alert)
+                if not alive:
+                    return
+                sleep(WATCH_INTERVAL_S)
+        except Exception:
+            log.exception("checking for interrupted runs failed")
+
+    def ensure_no_active_run() -> None:
+        """409 if another run is live; runs that died silently are failed and alerted."""
+        alive, alerts = close_stale_runs()
+        send_alerts(alerts)
+        if alive:
+            raise HTTPException(409, f"run {alive[0]} is still running")
 
     def run_in_background(
         service: RunService, run_id: int, sites: list[SiteConfig], notifier: Notifier | None
@@ -304,6 +382,7 @@ def create_app(
             log.exception("run failed", extra={"run_id": run_id})
             deliver(notifier, run_failed(exc, run_id))
         finally:
+            app.state.active_run_id = None
             lock.release()
 
     @app.get("/healthz")
@@ -366,6 +445,7 @@ def create_app(
                 settings, dry_run=False, fetcher_factory=fetcher_factory, storage=storage()
             )
             run_id = service.start()
+            request.app.state.active_run_id = run_id
             notifier = notifier_or_none() if body.notify else None
             thread = threading.Thread(
                 target=run_in_background,

@@ -116,6 +116,22 @@ def run_failed(error: BaseException, run_id: int | None = None) -> Notification:
     )
 
 
+def run_interrupted(
+    run_id: int, *, sites_done: int, total_sites: int | None, pages: int
+) -> Notification:
+    """A run that stopped without finishing (the host restarted or slept mid-run)."""
+    of_total = f" of {total_sites}" if total_sites is not None else ""
+    return Notification(
+        title=f"Extracto run #{run_id} was interrupted",
+        description=(
+            f"It stopped after {sites_done}{of_total} sites ({_count(pages, 'page')}): the app "
+            "restarted or went to sleep. Pages crawled so far are saved. "
+            "Start a new run with POST /runs."
+        ),
+        level=NotificationLevel.ERROR,
+    )
+
+
 def connectivity_check() -> Notification:
     return Notification(
         title="Extracto test notification",

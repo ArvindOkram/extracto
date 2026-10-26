@@ -30,8 +30,9 @@ All DB access goes through repositories. CLI and API stay thin.
   keep: localhost bind unless `EXTRACTO_API_KEY` is set, refuse private/internal target IPs
   (`domain/net.py`), cap max_pages, one crawl at a time. The future dashboard extends this app.
   `POST /runs` starts a background run of sites.yaml (202 + `GET /runs/{id}`) for the external
-  scheduler; stale `running` runs (no fetch for 20 min) are marked failed. `/healthz` must stay
-  DB-free (it's the keep-awake ping).
+  scheduler; stale `running` runs (no fetch for 20 min) are marked failed and alerted in Discord,
+  on `POST /runs` and by a startup check for runs left unfinished. `/healthz` must stay DB-free
+  (it's the keep-awake ping).
 - Deployment: Render free web service (`render.yaml`, `Dockerfile`) + Neon Postgres +
   cron-job.org + Discord; guide in `docs/deploy-render.md`, checklist in `TODO.md`. Postgres URLs
   are normalized in `settings.normalize_database_url`; DB tests run on Postgres in CI via
