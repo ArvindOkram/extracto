@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     # Secret: anyone with this URL can post to the channel.
     discord_webhook_url: SecretStr | None = None
+    # Optional relay that forwards webhook calls to Discord, for hosts whose IPs Discord blocks.
+    discord_relay_url: str | None = None
     # Required in the X-API-Key header when set (and to serve on a non-local address).
     api_key: SecretStr | None = Field(default=None, validation_alias="EXTRACTO_API_KEY")
 

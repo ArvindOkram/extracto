@@ -6,6 +6,7 @@ services:
     name: extracto
     runtime: docker
     plan: free
+    region: singapore              # keep the same region as the Neon database
     dockerfilePath: ./Dockerfile
     healthCheckPath: /healthz
     autoDeploy: true
@@ -13,6 +14,8 @@ services:
       - key: DATABASE_URL          # Neon/Supabase connection string
         sync: false
       - key: DISCORD_WEBHOOK_URL   # Discord channel webhook
+        sync: false
+      - key: DISCORD_RELAY_URL     # optional Cloudflare Worker relay (docs/deploy-render.md)
         sync: false
       - key: EXTRACTO_API_KEY      # random value; copy it into cron-job.org and Postman
         generateValue: true

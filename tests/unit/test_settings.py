@@ -52,3 +52,18 @@ def test_generic_api_key_env_var_is_ignored(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setenv("EXTRACTO_API_KEY", "ours")
     key = Settings(_env_file=None).api_key
     assert key is not None and key.get_secret_value() == "ours"
+
+
+def test_notifier_uses_relay_url(tmp_path: Path) -> None:
+    from extracto.bootstrap import build_notifier
+
+    settings = Settings(
+        _env_file=None,
+        data_dir=tmp_path,
+        discord_webhook_url="https://discord.com/api/webhooks/1/tok",  # type: ignore[arg-type]
+        discord_relay_url="https://relay.test",
+    )
+    notifier = build_notifier(settings)
+    assert notifier is not None
+    assert notifier._url == "https://relay.test/api/webhooks/1/tok"
+    notifier.close()

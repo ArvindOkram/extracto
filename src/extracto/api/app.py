@@ -2,7 +2,8 @@
 
 - POST /crawl       test crawl from a body; waits for the result (dry_run by default)
 - POST /runs        scheduled run of sites.yaml in the background; returns 202 immediately
-- GET  /runs[/{id}] run status and progress
+- GET  /runs        recent runs with totals
+- GET  /runs/{id}   one run in detail: totals, current site, per-site breakdown
 - POST /notify-test check the Discord webhook
 
 Safety: binds to localhost by default (see `extracto serve`), refuses private/internal target
@@ -74,6 +75,7 @@ class CrawlRequest(BaseModel):
     start_url: str | None = Field(None, description="Crawl this URL with inline settings.")
     name: str | None = Field(None, description="Label for an inline site (default: its host).")
     sitemap_url: str | None = None
+    use_sitemap: bool | None = Field(None, description="False: follow links only, no sitemaps.")
     allow_patterns: list[str] = []
     exclude_patterns: list[str] = Field([], description="Added to the defaults in sites.yaml.")
     max_pages: int | None = Field(None, ge=1, le=MAX_PAGES)
@@ -165,6 +167,31 @@ class RunStatusOut(BaseModel):
     errors: int
 
 
+class SiteRunOut(BaseModel):
+    site: str
+    pages_fetched: int = Field(description="Requests made (robots.txt skips excluded).")
+    new_pages: int = Field(description="Pages seen for the first time.")
+    updated_pages: int = Field(description="Pages whose content changed since the last snapshot.")
+    not_modified: int = Field(description="Pages the server reported unchanged (HTTP 304).")
+    errors: int
+    skipped_robots: int
+    outcomes: dict[str, int] = Field(description="Count of every fetch outcome.")
+    first_fetch_at: datetime
+    last_fetch_at: datetime
+
+
+class RunDetailOut(RunStatusOut):
+    duration_s: float = Field(description="So far, if the run is still going.")
+    last_activity_at: datetime
+    current_site: str | None = Field(description="Site being crawled now (running runs only).")
+    sites_crawled: int
+    new_pages: int
+    updated_pages: int
+    not_modified: int
+    skipped_robots: int
+    sites: list[SiteRunOut]
+
+
 def create_app(
     settings: Settings | None = None,
     *,
@@ -219,7 +246,9 @@ def create_app(
                 site = config.site(body.site)
             except ConfigError as exc:
                 raise HTTPException(404, str(exc)) from None
-            overrides = body.model_dump(include={"max_pages", "max_depth", "delay_seconds"})
+            overrides = body.model_dump(
+                include={"max_pages", "max_depth", "delay_seconds", "use_sitemap"}
+            )
             updates = {k: v for k, v in overrides.items() if v is not None}
             updates["max_pages"] = min(updates.get("max_pages", site.max_pages), MAX_PAGES)
             return site.model_copy(update=updates)
@@ -369,10 +398,28 @@ def create_app(
             runs = RunRepository(session)
             return [status_of(runs, r.id) for r in runs.recent(min(max(limit, 1), 100))]
 
-    @app.get("/runs/{run_id}", response_model=RunStatusOut, dependencies=[Depends(require_key)])
-    def get_run(run_id: int) -> RunStatusOut:
+    @app.get("/runs/{run_id}", response_model=RunDetailOut, dependencies=[Depends(require_key)])
+    def get_run(run_id: int) -> RunDetailOut:
+        """Status, totals, and a per-site breakdown of one run."""
         with storage().session_factory() as session:
-            return status_of(RunRepository(session), run_id)
+            runs = RunRepository(session)
+            summary = status_of(runs, run_id)
+            sites = [SiteRunOut(**s) for s in runs.site_stats(run_id)]
+            last_activity = runs.last_activity(run_id)
+        running = summary.status is RunStatus.RUNNING
+        end = summary.finished_at or utcnow()
+        return RunDetailOut(
+            **summary.model_dump(),
+            duration_s=round((end - summary.started_at).total_seconds(), 1),
+            last_activity_at=last_activity,
+            current_site=sites[-1].site if running and sites else None,
+            sites_crawled=len(sites),
+            new_pages=sum(s.new_pages for s in sites),
+            updated_pages=sum(s.updated_pages for s in sites),
+            not_modified=sum(s.not_modified for s in sites),
+            skipped_robots=sum(s.skipped_robots for s in sites),
+            sites=sites,
+        )
 
     @app.post("/notify-test", dependencies=[Depends(require_key)])
     def notify_test() -> dict[str, str]:

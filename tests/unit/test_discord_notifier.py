@@ -156,3 +156,18 @@ def test_accepts_discordapp_and_ptb_hosts() -> None:
         "https://ptb.discord.com/api/webhooks/1/x",
     ]:
         DiscordNotifier(url).close()
+
+
+@respx.mock
+def test_relay_receives_webhook_path() -> None:
+    route = respx.post("https://relay.test/api/webhooks/123/secret-token").respond(204)
+    n = DiscordNotifier(WEBHOOK, relay_url="https://relay.test/")
+    n.send(sample())
+    n.close()
+    assert route.called
+    assert body(route)["allowed_mentions"] == {"parse": []}
+
+
+def test_rejects_non_https_relay() -> None:
+    with pytest.raises(ValueError, match="DISCORD_RELAY_URL"):
+        DiscordNotifier(WEBHOOK, relay_url="http://relay.test")

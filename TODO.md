@@ -1,75 +1,65 @@
 # Extracto: TODO
 
-Status as of 20 Oct 2026. Code: storage, crawler (Phases 1–3), Discord notifications, HTTP API
-(test crawls, background runs), Postgres support, Render packaging. Tests: 261, all passing locally (the Postgres CI job runs once pushed).
+Status as of 25 Oct 2026. Code: storage, crawler (Phases 1–3, RFC 9309 robots, sitemaps, politeness),
+Discord notifications, HTTP API (`/crawl` test crawls, `/runs` background runs with per-site stats),
+Postgres support, Render packaging. Tests: 283 passing locally. Sites: 40 in `config/sites.yaml`
+(health, marketing/SEO, social, design, newsletters, AI). A full run takes about 70 minutes.
 Deploy guide: [`docs/deploy-render.md`](docs/deploy-render.md).
 
 Legend: 🧑 = you (accounts, secrets, decisions) · 🤖 = code work I can do
 
 ---
 
-## 1. Verify locally (before deploying)
+## Go live, in order
 
-- [ ] 🧑 Activate the venv and reinstall: `.venv\Scripts\Activate.ps1`, then `pip install -e ".[dev,api,postgres]"`
-- [ ] 🧑 Run the tests: `pytest -q` (expect all passing)
-- [ ] 🧑 Set a real contact email in `config/sites.yaml` → `defaults.user_agent` (currently `marketing-it@example.com`)
-- [ ] 🧑 Dry run: `extracto run --site "Google Search Docs" --dry-run`
-- [ ] 🧑 Real run: `extracto run --site "Google Search Docs"`, then confirm `data\monitor.db` exists
-- [ ] 🧑 Second real run shows "0 new snapshots" (no false changes)
-- [ ] 🧑 Discord locally: set `DISCORD_WEBHOOK_URL` in `.env`, then `extracto notify-test`
-- [ ] 🧑 API locally: `extracto serve`, open http://127.0.0.1:8000/docs, try `POST /runs`, then `GET /runs/1`
-- [ ] 🧑 Optional: local Docker build, if Docker is installed: `docker build -t extracto .`
+### 1. Code to GitHub
+- [ ] 🤖 Optional fix first: crawl only the start host by default (Semrush wanders into `pt.`, `es.`... subdomains)
+- [ ] 🤖 Commit the work on a branch and open a PR to `main` (ask me)
+- [ ] 🧑 CI green on the PR: ruff, SQLite tests, and the **Postgres** job (first time the new run-stats query runs on Postgres)
+- [ ] 🧑 Merge to `main` (Render deploys from `main`)
+- [ ] 🧑 Confirm `.env`, `config/sites.yaml`, `data/` are not on GitHub (they're gitignored)
 
-## 2. Git and GitHub (Render deploys from GitHub)
+### 2. Secrets
+- [ ] 🧑 **Rotate the Discord webhook** (it appeared in chat and old logs): delete it, create a new one in the updates channel
+- [ ] 🧑 Don't reuse the local `EXTRACTO_API_KEY` (it was pasted in chat); Render generates a new one
+- [ ] 🧑 Crawler contact email in `config/sites.yaml` → `defaults.user_agent` is one you check (now `aokram17@gmail.com`; a team address is better)
+- [ ] 🧑 Terms of service checked for the sites you keep (especially TechCrunch and The Verge)
 
-- [ ] 🧑 Decide what to commit: all code, plus the planning docs? (`competitor-site-monitor-prd-and-tech-doc.md`, `extracto-phase-wise-development-plan.md`, `extracto-project-plan.md`, `future-plan.md`)
-- [ ] 🤖 Create a branch, commit, and open a PR (ask me; nothing is committed yet)
-- [ ] 🧑 Create the GitHub repo (private is fine) and push
-- [ ] 🧑 Confirm these are **not** in git: `.env`, `config/sites.yaml`, `data/`, which `.gitignore` covers
-- [ ] 🧑 Check that GitHub Actions CI is green (both jobs: SQLite tests and the Postgres job)
-- [ ] 🧑 Optional: branch protection on `main` requiring CI to pass
+### 3. Neon (database)
+- [ ] 🧑 neon.tech → Create project → region **AWS Asia Pacific (Singapore)**
+- [ ] 🧑 Copy the **direct** (non-pooled) connection string with `sslmode=require`
+- [ ] 🧑 Optional check from your laptop: `$env:DATABASE_URL="..."; extracto init-db`, then close the terminal
 
-## 3. Discord
+### 4. Render (app)
+- [ ] 🧑 render.com → New → **Blueprint** → repo `ArvindOkram/extracto` (reads `render.yaml`, Singapore, free)
+- [ ] 🧑 Paste `DATABASE_URL` (Neon) and `DISCORD_WEBHOOK_URL` (the new webhook)
+- [ ] 🧑 Environment → **Secret Files** → add `sites.yaml` = contents of your local `config/sites.yaml`
+- [ ] 🧑 Copy the generated `EXTRACTO_API_KEY` into a password manager
+- [ ] 🧑 Note the URL `https://<name>.onrender.com`
 
-- [ ] 🧑 Choose the channel for updates
-- [ ] 🧑 Edit Channel → Integrations → Webhooks → New Webhook → copy the URL
-- [ ] 🧑 Keep the URL secret (it will go into Render only)
+### 5. Verify on Render
+- [ ] 🧑 `GET /healthz` → `{"status":"ok"}` (first call can take ~1 min while it wakes)
+- [ ] 🧑 `POST /notify-test` with `X-API-Key` → test message in Discord
+- [ ] 🧑 `POST /crawl` `{"site": "Anthropic News", "max_pages": 3}` → dry run works from Render
+- [ ] 🧑 Baseline run: `POST /runs` with `{}` → 202 + `run_id`. Keep the app awake for ~70 min
+      (open `/healthz` every ~10 min, or turn on cron Job 1 first), then `GET /runs/{id}` → `completed`
+- [ ] 🧑 Discord shows "Baseline saved" per site; check `errors` per site in `GET /runs/{id}`
 
-## 4. Neon (free Postgres)
+### 6. cron-job.org (schedule, times in UTC)
+- [ ] 🧑 Job 1 keep-awake: `GET https://<app>.onrender.com/healthz`, crontab `*/10 5-9 * * 1,3,5`
+- [ ] 🧑 Job 2 start run: `POST https://<app>.onrender.com/runs`, crontab `0 6 * * 1,3,5`,
+      headers `X-API-Key: <key>` and `Content-Type: application/json`, body `{}`
+- [ ] 🧑 Failure email notifications on for Job 2
+- [ ] 🧑 Window check: run starts 06:00, ends ~07:10, keep-awake runs to 09:50 ✅ (re-check if you add sites)
 
-- [ ] 🧑 Create a Neon account and project (region near your Render region)
-- [ ] 🧑 Copy the **direct** connection string (with `sslmode=require`)
-- [ ] 🧑 Optional: test from your machine: put it in `.env` as `DATABASE_URL=...`, run `extracto init-db`, then remove it again
-- [ ] 🧑 Note the free storage limit (~0.5 GB) and keep `max_pages` realistic (about 50–150 per site)
+### 7. After the first scheduled run
+- [ ] 🧑 Discord summary arrived; `GET /runs` shows `completed`, not `failed`
+- [ ] 🧑 Second run lists only real new/updated pages (no flood of false changes)
+- [ ] 🧑 Neon dashboard storage is growing slowly (expect tens of MB per month, limit ~0.5 GB)
+- [ ] 🤖 Hardening: re-check private-IP safety on every request, not just `/crawl` start URLs
 
-## 5. Render (free web service)
-
-- [ ] 🧑 New → Blueprint → select the repo (uses `render.yaml`)
-- [ ] 🧑 Paste `DATABASE_URL` and `DISCORD_WEBHOOK_URL` when prompted
-- [ ] 🧑 Add the Secret File `sites.yaml` (Environment → Secret Files) with your real site list
-- [ ] 🧑 Copy the generated `EXTRACTO_API_KEY` (Environment tab) into a password manager
-- [ ] 🧑 Note the service URL (`https://<name>.onrender.com`)
-- [ ] 🧑 Verify: `GET /healthz` → `{"status":"ok"}`
-- [ ] 🧑 Verify: `POST /notify-test` (with key) → a Discord message arrives
-- [ ] 🧑 Verify: `POST /runs` → 202; `GET /runs/{id}` → `completed`; Discord summary arrives
-
-## 6. cron-job.org (free scheduler)
-
-- [ ] 🧑 Create an account; set the job time zone to UTC
-- [ ] 🧑 Job 1, keep-awake: `GET https://<app>.onrender.com/healthz`, crontab `*/10 5-9 * * 1,3,5`
-- [ ] 🧑 Job 2, start run: `POST https://<app>.onrender.com/runs`, crontab `0 6 * * 1,3,5`, headers `X-API-Key` and `Content-Type: application/json`, body `{}`
-- [ ] 🧑 Turn on failure email notifications for Job 2
-- [ ] 🧑 Size the keep-awake window: total pages × 3 s must fit inside it
-- [ ] 🧑 After the first scheduled day, check: Discord message received, `GET /runs` shows `completed`
-
-## 7. Security checklist
-
-- [ ] 🧑 No secrets in git history (`git log -p | findstr /i "webhooks api_key password"` shows nothing real)
-- [ ] 🧑 `EXTRACTO_API_KEY` is long and random (Render's generated value is)
-- [ ] 🧑 Discord webhook, Neon password and API key are stored only in Render and your password manager
-- [ ] 🧑 Know how to rotate each one (see the deploy guide)
-- [ ] 🧑 Each site's terms of service reviewed before adding it to `sites.yaml`
-- [ ] 🤖 Hardening: re-check private-IP safety on every request, not just the start URL (currently checked for `/crawl` start URLs only)
+### Changing sites later
+- Edit local `config/sites.yaml`, dry-run with `POST /crawl`, then paste the file into the Render Secret File (it doesn't sync from git). New sites start with a silent baseline.
 
 ## 8. First month in production
 
@@ -122,4 +112,4 @@ Legend: 🧑 = you (accounts, secrets, decisions) · 🤖 = code work I can do
 - [ ] 🧑 Crawler contact email
 - [ ] 🧑 Crawl days and times (default Mon/Wed/Fri 06:00 UTC)
 - [ ] 🧑 Who else should receive Discord updates or reports
-- [ ] 🧑 When to add AI summaries (needs `ANTHROPIC_API_KEY`, small cost)
+- [ ] 🧑 When to add AI summaries (needs `GEMINI_API_KEY`, small cost)

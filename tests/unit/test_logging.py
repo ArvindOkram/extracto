@@ -40,3 +40,9 @@ def test_level_filters(capsys: pytest.CaptureFixture[str]) -> None:
     configure_logging("WARNING", "kv")
     logging.getLogger("extracto.test").info("hidden")
     assert capsys.readouterr().err == ""
+
+
+def test_httpx_request_urls_not_logged(capsys: pytest.CaptureFixture[str]) -> None:
+    configure_logging("DEBUG", "kv")
+    logging.getLogger("httpx").info("HTTP Request: POST https://discord.com/api/webhooks/1/secret")
+    assert "secret" not in capsys.readouterr().err

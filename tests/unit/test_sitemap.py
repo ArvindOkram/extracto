@@ -1,4 +1,5 @@
 import gzip
+from datetime import UTC, datetime
 
 from extracto.domain.sitemap import parse_sitemap
 
@@ -19,6 +20,18 @@ def test_urlset() -> None:
     result = parse_sitemap(URLSET)
     assert result.urls == ["https://a.test/pricing", "https://a.test/blog/post-1"]
     assert result.sitemaps == []
+    assert result.lastmod == {"https://a.test/pricing": datetime(2026, 10, 1, tzinfo=UTC)}
+
+
+def test_lastmod_formats() -> None:
+    xml = b"""<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+      <url><loc>https://a.test/a</loc><lastmod>2026-10-01T10:00:00+05:30</lastmod></url>
+      <url><loc>https://a.test/b</loc><lastmod>2026-10-01T04:30:00Z</lastmod></url>
+      <url><loc>https://a.test/c</loc><lastmod>not a date</lastmod></url>
+    </urlset>"""
+    result = parse_sitemap(xml)
+    when = datetime(2026, 10, 1, 4, 30, tzinfo=UTC)
+    assert result.lastmod == {"https://a.test/a": when, "https://a.test/b": when}
 
 
 def test_index() -> None:

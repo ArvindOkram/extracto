@@ -1,5 +1,7 @@
+import itertools
 from pathlib import Path
 
+import httpx
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -253,6 +255,112 @@ def test_offsite_sitemaps_never_fetched(h: Harness) -> None:
     )
     h.run()
     assert all(r.url.host == "site.test" for r in h.fake.requests)
+
+
+def test_sitemap_may_exceed_page_size_limit(h: Harness) -> None:
+    padding = "".join(f"/padding-seg-{i:03d}" for i in range(400))  # ~6.4 KB: > 4 KB, < 20 KB
+    h.fake.pages["/sitemap.xml"] = sitemap("/only-in-sitemap", f"/search{padding}")
+    result = h.run(make_site(max_bytes=4000))
+    assert f"{BASE}/only-in-sitemap" in {p.url for p in result.pages}
+
+
+def test_filtered_sitemap_urls_do_not_use_up_page_limit(h: Harness) -> None:
+    h.fake.pages["/sitemap.xml"] = sitemap(*(f"/login/{i}" for i in range(5)), "/only-in-sitemap")
+    result = h.run(make_site(max_pages=3, max_depth=0))
+    assert f"{BASE}/only-in-sitemap" in {p.url for p in result.pages}
+
+
+def test_redirect_into_disallowed_path_not_followed(h: Harness) -> None:
+    h.fake.pages["/about"] = FakePage(status=302, headers={"location": "/private/secret"})
+    result = h.run()
+    assert "/private/secret" not in h.fake.paths_requested
+    assert result.skipped_robots == 2  # the direct link and the redirect
+
+
+def test_each_host_uses_its_own_robots_txt(h: Harness) -> None:
+    blog_robots = "User-agent: *\nDisallow: /drafts\n"
+    blog_pages = {
+        "/robots.txt": FakePage(body=blog_robots, content_type="text/plain"),
+        "/drafts/plan": html("Draft", "Not public yet.", []),
+        "/launch": html("Launch", "We launched a thing.", []),
+    }
+    h.fake.pages["/"] = html(
+        "Home", "Welcome.", ["https://blog.site.test/drafts/plan", "https://blog.site.test/launch"]
+    )
+    main_handler = h.fake.handler
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host != "blog.site.test":
+            return main_handler(request)
+        h.fake.requests.append(request)
+        page = blog_pages.get(request.url.path)
+        if page is None:
+            return httpx.Response(404)
+        return httpx.Response(
+            page.status, headers={"content-type": page.content_type}, content=page.body
+        )
+
+    h.fake.handler = handler  # type: ignore[method-assign]
+    result = h.run()
+    blog = [r.url.path for r in h.fake.requests if r.url.host == "blog.site.test"]
+    assert "/robots.txt" in blog and "/launch" in blog
+    assert "/drafts/plan" not in blog
+    assert result.skipped_robots >= 1
+
+
+def test_trailing_slash_links_fetched_as_linked(h: Harness) -> None:
+    h.fake.pages["/"] = html("Home", "Welcome.", ["/guide/"])
+    h.fake.pages["/guide/"] = html("Guide", "How to use it.", [])
+    h.run(make_site(use_sitemap=False))
+    assert h.fake.paths_requested.count("/guide/") == 1
+    assert "/guide" not in h.fake.paths_requested  # no slash-less request + redirect
+    assert f"{BASE}/guide/" in h.page_urls()
+
+
+def test_use_sitemap_false_skips_sitemaps(h: Harness) -> None:
+    h.run(make_site(use_sitemap=False))
+    assert "/sitemap.xml" not in h.fake.paths_requested
+    assert f"{BASE}/only-in-sitemap" not in h.page_urls()  # only reachable via the sitemap
+
+
+def test_sitemap_urls_newest_first_under_page_cap(h: Harness) -> None:
+    entries = "".join(
+        f"<url><loc>{BASE}/blog/post-{n}</loc><lastmod>2026-10-{n:02d}</lastmod></url>"
+        for n in (3, 9, 1, 5)
+    )
+    h.fake.pages["/sitemap.xml"] = FakePage(
+        body=f'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{entries}</urlset>',
+        content_type="application/xml",
+    )
+    for n in (3, 9, 1, 5):
+        h.fake.pages[f"/blog/post-{n}"] = html(f"Post {n}", "News.", [])
+    result = h.run(make_site(max_pages=3, max_depth=0))
+    # Start page plus the two most recently modified posts.
+    expected = [f"{BASE}/", f"{BASE}/blog/post-9", f"{BASE}/blog/post-5"]
+    assert [p.url for p in result.pages] == expected
+
+
+def test_sitemap_reading_stops_at_time_budget(session_factory: sessionmaker[Session]) -> None:
+    fake = FakeSite(build_pages())
+    fake.pages["/robots.txt"] = FakePage(
+        body=f"User-agent: *\nSitemap: {BASE}/a.xml\nSitemap: {BASE}/b.xml\n",
+        content_type="text/plain",
+    )
+    fake.pages["/a.xml"] = sitemap("/pricing")
+    fake.pages["/b.xml"] = sitemap("/only-in-sitemap")
+    ticks = itertools.count(step=100)  # every clock read is 100s later
+    service = CrawlService(
+        fetcher_factory=lambda site: fetcher_for_site(
+            site, client=fake.client(), sleep=lambda _s: None
+        ),
+        extractor_factory=lambda site: TrafilaturaExtractor(site.noise_selectors),
+        session_factory=None,
+        raw_store=None,
+        clock=lambda: float(next(ticks)),
+    )
+    service.crawl_site(make_site(), run_id=None, dry_run=True)
+    assert "/a.xml" in fake.paths_requested
+    assert "/b.xml" not in fake.paths_requested
 
 
 def _changes(result) -> dict[str, str]:

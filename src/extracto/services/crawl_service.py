@@ -8,6 +8,7 @@ from collections import deque
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -31,6 +32,9 @@ from extracto.interfaces import Extractor, Fetcher
 log = logging.getLogger(__name__)
 
 MAX_SITEMAP_FILES = 10
+SITEMAP_SIZE_FACTOR = 5  # sitemaps may be this many times a site's page size limit
+EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+SITEMAP_BUDGET_S = 120.0  # sitemaps are only a seed; stop reading them after this long
 ERROR_OUTCOMES = frozenset({FetchOutcome.HTTP_ERROR, FetchOutcome.NETWORK_ERROR})
 
 
@@ -87,7 +91,7 @@ class _SiteState:
     fetcher: Fetcher
     extractor: Extractor
     url_filter: UrlFilter
-    robots: RobotsRules
+    robots: dict[str, RobotsRules]  # per origin (scheme://host:port), loaded on first use
     run_id: int | None
     site_id: int | None
     dry_run: bool
@@ -137,12 +141,14 @@ class CrawlService:
                     )
             while state.frontier and result.pages_crawled < site.max_pages:
                 url, depth = state.frontier.popleft()
-                if not state.robots.can_fetch(url, site.user_agent):
+                if not self._allowed(state, url):
                     result.skipped_robots += 1
                     self._record_skip(state, url)
                     continue
                 page = self._crawl_url(state, url, depth)
-                if page is not None:
+                if page is not None and page.outcome is FetchOutcome.SKIPPED_ROBOTS:
+                    result.skipped_robots += 1  # redirected to a disallowed URL
+                elif page is not None:
                     result.pages.append(page)
         finally:
             fetcher.close()
@@ -166,7 +172,6 @@ class CrawlService:
     ) -> _SiteState:
         start_url = normalize_url(site.start_url)
         assert start_url is not None  # validated by config
-        robots = self._load_robots(fetcher, start_url, site.user_agent)
 
         site_id = None
         if not dry_run:
@@ -184,54 +189,82 @@ class CrawlService:
                 allow_patterns=site.allow_patterns,
                 exclude_patterns=site.exclude_patterns,
             ),
-            robots=robots,
+            robots={},
             run_id=run_id,
             site_id=site_id,
             dry_run=dry_run,
         )
+        robots = self._robots(state, start_url)
         state.enqueue(start_url, 0)  # always crawled, even if allow_patterns don't match it
-        sources = [site.sitemap_url] if site.sitemap_url else robots.sitemaps
-        for raw in self._sitemap_urls(state, sources):
-            url = normalize_url(raw)
-            if url and state.url_filter.reject_reason(url) is None:
+        if site.use_sitemap:
+            sources = [site.sitemap_url] if site.sitemap_url else robots.sitemaps
+            for url in self._sitemap_urls(state, sources):
                 state.enqueue(url, 0)
         return state
 
-    def _load_robots(self, fetcher: Fetcher, start_url: str, user_agent: str) -> RobotsRules:
-        result = fetcher.fetch(normalize_url("/robots.txt", base=start_url) or "", html_only=False)
-        status = result.status_code if result.outcome is not FetchOutcome.NETWORK_ERROR else None
-        rules = RobotsRules.from_response(status, result.text if result.ok else "", start_url)
-        delay = rules.crawl_delay(user_agent)
-        if delay is not None and delay > fetcher.delay_seconds:
-            fetcher.delay_seconds = delay
-        return rules
+    def _robots(self, state: _SiteState, url: str) -> RobotsRules:
+        """robots.txt for the URL's origin; each host (www, blog., extra_domains) has its own."""
+        parts = urlsplit(url)
+        origin = f"{parts.scheme}://{parts.netloc}"
+        if origin not in state.robots:
+            fetcher = state.fetcher
+            result = fetcher.fetch(f"{origin}/robots.txt", html_only=False)
+            status = (
+                result.status_code if result.outcome is not FetchOutcome.NETWORK_ERROR else None
+            )
+            # Unreachable robots.txt: only the start URL may be fetched (so nothing on other hosts).
+            rules = RobotsRules.from_response(
+                status, result.text if result.ok else "", state.site.start_url
+            )
+            delay = rules.crawl_delay(state.site.user_agent)
+            if delay is not None and delay > fetcher.delay_seconds:
+                fetcher.delay_seconds = delay
+            state.robots[origin] = rules
+        return state.robots[origin]
+
+    def _allowed(self, state: _SiteState, url: str) -> bool:
+        return self._robots(state, url).can_fetch(url, state.site.user_agent)
 
     def _sitemap_urls(self, state: _SiteState, sources: list[str]) -> list[str]:
+        """Crawlable URLs from the sitemaps, most recently modified first, up to max_pages."""
         queue = deque(sources)
         seen: set[str] = set()
-        urls: list[str] = []
+        found: dict[str, datetime] = {}  # URL -> <lastmod> (EPOCH when undated)
         limit = state.site.max_pages
-        while queue and len(urls) < limit and len(seen) < MAX_SITEMAP_FILES:
+        max_bytes = state.site.max_bytes * SITEMAP_SIZE_FACTOR
+        deadline = self._clock() + SITEMAP_BUDGET_S
+        while queue and len(found) < limit and len(seen) < MAX_SITEMAP_FILES:
+            if self._clock() > deadline:
+                log.warning(
+                    "sitemap time budget used up; relying on links",
+                    extra={"site": state.site.name, "sitemaps_read": len(seen)},
+                )
+                break
             sitemap_url = queue.popleft()
             host = urlsplit(sitemap_url).hostname or ""
             # Offsite sitemaps (even ones listed in robots.txt) are never fetched.
             if (
                 sitemap_url in seen
                 or not state.url_filter.on_domain(host)
-                or not state.robots.can_fetch(sitemap_url, state.site.user_agent)
+                or not self._allowed(state, sitemap_url)
             ):
                 continue
             seen.add(sitemap_url)
-            result = state.fetcher.fetch(sitemap_url, html_only=False)
+            result = state.fetcher.fetch(sitemap_url, html_only=False, max_bytes=max_bytes)
             if not result.ok:
                 log.warning(
                     "sitemap unavailable", extra={"url": sitemap_url, "outcome": result.outcome}
                 )
                 continue
-            content = parse_sitemap(result.body, max_bytes=state.site.max_bytes * 5)
-            urls.extend(content.urls)
+            content = parse_sitemap(result.body, max_bytes=max_bytes)
+            # Filter here so only crawlable URLs count toward the page limit.
+            for raw in content.urls:
+                url = normalize_url(raw)
+                if url and url not in found and state.url_filter.reject_reason(url) is None:
+                    found[url] = content.lastmod.get(raw, EPOCH)
             queue.extend(content.sitemaps)
-        return urls[:limit]
+        # Newest first (undated last), so fresh posts aren't crowded out by the page cap.
+        return sorted(found, key=found.__getitem__, reverse=True)[:limit]  # stable for ties
 
     # -- per URL ------------------------------------------------------------------------------
 
@@ -245,7 +278,12 @@ class CrawlService:
                 if known is not None:
                     etag, last_modified = known.etag, known.last_modified
 
-        fetch = state.fetcher.fetch(url, etag=etag, last_modified=last_modified)
+        fetch = state.fetcher.fetch(
+            url,
+            etag=etag,
+            last_modified=last_modified,
+            can_follow=lambda target: self._allowed(state, target),
+        )
         final = normalize_url(fetch.final_url) or url
         log.info(
             "fetched",

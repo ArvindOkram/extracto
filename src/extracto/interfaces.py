@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Protocol
 
 from extracto.domain.models import ExtractedPage, FetchResult, Notification
@@ -17,6 +18,8 @@ class Fetcher(Protocol):
         etag: str | None = None,
         last_modified: str | None = None,
         html_only: bool = True,
+        max_bytes: int | None = None,
+        can_follow: Callable[[str], bool] | None = None,
     ) -> FetchResult: ...
 
     def close(self) -> None: ...

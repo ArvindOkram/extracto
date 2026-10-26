@@ -61,7 +61,7 @@ Python 3.11+, httpx, trafilatura, selectolax, SQLAlchemy 2.0 + Alembic (SQLite),
 pydantic, pydantic-settings, pyyaml, typer, jinja2, tenacity, pytest, respx, ruff.
 Playwright only for sites with render_js: true.
 Optional extras: `.[llm]` (anthropic, for Claude summaries; template summaries are the
-fallback when `ANTHROPIC_API_KEY` is unset) and `.[js]` (playwright).
+fallback when `GEMINI_API_KEY` is unset) and `.[js]` (playwright).
 Do NOT add a crawling framework, queue, or another database.
 
 ## Rules

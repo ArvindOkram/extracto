@@ -42,3 +42,6 @@ def configure_logging(level: str = "INFO", fmt: str = "kv") -> None:
     root = logging.getLogger()
     root.handlers[:] = [handler]
     root.setLevel(level.upper())
+    # httpx logs every request URL at INFO, which would leak the Discord webhook token.
+    # Our own fetch logs already record crawled URLs.
+    logging.getLogger("httpx").setLevel(logging.WARNING)

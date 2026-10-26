@@ -205,6 +205,37 @@ def test_list_recent_runs(client: TestClient) -> None:
     assert [r["run_id"] for r in runs] == [2, 1]
 
 
+def test_run_details_break_down_by_site(client: TestClient, fake: FakeSite) -> None:
+    first = client.post("/runs", json={"notify": False}).json()["run_id"]
+    wait_for_run(client)
+    fake.pages["/pricing"] = html("Pricing", "Pro is now $39.", ["/"])
+    second = client.post("/runs", json={"notify": False}).json()["run_id"]
+    wait_for_run(client)
+
+    detail = client.get(f"/runs/{first}").json()
+    assert detail["status"] == "completed" and detail["current_site"] is None
+    assert detail["sites_crawled"] == 2
+    assert detail["new_pages"] == 4 and detail["updated_pages"] == 0
+    assert detail["duration_s"] >= 0
+    fake_site = detail["sites"][0]
+    assert fake_site["site"] == "Fake"
+    assert fake_site["new_pages"] == 3 and fake_site["errors"] == 0
+    assert fake_site["outcomes"] == {"ok": 3}
+
+    detail = client.get(f"/runs/{second}").json()
+    assert detail["new_pages"] == 0 and detail["updated_pages"] == 1
+    assert [s["updated_pages"] for s in detail["sites"]] == [1, 0]
+
+
+def test_running_run_reports_current_site(client: TestClient, settings: Settings) -> None:
+    client.get("/runs")
+    run_id = _insert_running_run(settings, timedelta(minutes=1))
+    detail = client.get(f"/runs/{run_id}").json()
+    assert detail["status"] == "running"
+    assert detail["sites"] == [] and detail["current_site"] is None
+    assert detail["duration_s"] >= 60
+
+
 def test_unknown_run_is_404(client: TestClient) -> None:
     assert client.get("/runs/999").status_code == 404
 
