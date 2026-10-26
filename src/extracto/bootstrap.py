@@ -61,4 +61,4 @@ def build_notifier(settings: Settings) -> DiscordNotifier | None:
     if settings.discord_webhook_url is None:
         return None
     url = settings.discord_webhook_url.get_secret_value().strip()
-    return DiscordNotifier(url) if url else None
+    return DiscordNotifier(url, relay_url=settings.discord_relay_url) if url else None

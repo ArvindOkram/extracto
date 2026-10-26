@@ -15,6 +15,8 @@ services:
         sync: false
       - key: DISCORD_WEBHOOK_URL   # Discord channel webhook
         sync: false
+      - key: DISCORD_RELAY_URL     # optional Cloudflare Worker relay (docs/deploy-render.md)
+        sync: false
       - key: EXTRACTO_API_KEY      # random value; copy it into cron-job.org and Postman
         generateValue: true
       - key: SITES_CONFIG          # add a Secret File named sites.yaml in the dashboard

@@ -151,6 +151,22 @@ activity and the next start works normally.
 - Change the site list: edit the **Secret File** in Render (redeploys automatically).
 - Rotate the API key: change `EXTRACTO_API_KEY` in Render, then update cron-job.org.
 
+## Discord relay (if Discord returns 429 from Render)
+
+Discord temporarily blocks IP addresses that send too many bad requests, and Render's free tier
+shares outbound IPs between many apps. If `POST /notify-test` returns `HTTP 429` even on the
+first message (while `extracto notify-test` works from your laptop), send through a free
+Cloudflare Worker instead:
+
+1. dash.cloudflare.com → **Workers & Pages** → **Create** → **Create Worker** → name it
+   `discord-relay` → **Deploy**.
+2. **Edit code**, replace everything with [`deploy/discord-relay-worker.js`](../deploy/discord-relay-worker.js),
+   set `WEBHOOK_ID` to the number in your webhook URL, and **Deploy**.
+3. Copy the Worker URL (`https://discord-relay.<you>.workers.dev`).
+4. Render → **Environment** → add `DISCORD_RELAY_URL` = that URL. Keep `DISCORD_WEBHOOK_URL` as
+   the normal Discord URL; Extracto sends the same path to the relay.
+5. `POST /notify-test` again.
+
 ## Troubleshooting
 
 | Symptom | Likely cause / fix |
@@ -162,3 +178,4 @@ activity and the next start works normally.
 | Run marked `failed` with no Discord message | Render slept or restarted mid-run; check that Job 1's window covers the run |
 | Database errors mentioning SSL or prepared statements | Use Neon's direct (non-pooled) string with `sslmode=require` |
 | No Discord message | `POST /notify-test`; a 502 shows Discord's error (e.g. deleted webhook) |
+| `Discord webhook rejected the message: HTTP 429` on the first message | Render's shared IP is blocked by Discord; use the Discord relay above |

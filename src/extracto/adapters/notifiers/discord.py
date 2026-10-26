@@ -39,6 +39,7 @@ class DiscordNotifier:
         webhook_url: str,
         *,
         username: str = "Extracto",
+        relay_url: str | None = None,
         client: httpx.Client | None = None,
         max_attempts: int = 3,
         sleep: Callable[[float], None] | None = None,
@@ -51,6 +52,14 @@ class DiscordNotifier:
         ):
             raise ValueError("DISCORD_WEBHOOK_URL must be a https Discord webhook URL")
         self._url = webhook_url
+        if relay_url:
+            # Some hosts' shared IPs are blocked by Discord; a relay (e.g. a Cloudflare Worker)
+            # receives the same /api/webhooks/... path and forwards it to Discord.
+            relay = urlsplit(relay_url)
+            if relay.scheme != "https" or not relay.hostname:
+                raise ValueError("DISCORD_RELAY_URL must be a https URL")
+            query = f"?{parts.query}" if parts.query else ""
+            self._url = relay_url.rstrip("/") + parts.path + query
         self._username = username
         self._client = client or httpx.Client(timeout=10)
         self._max_attempts = max_attempts
