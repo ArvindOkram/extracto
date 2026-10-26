@@ -73,6 +73,7 @@ def make_client(
         fetcher_factory: Callable[[SiteConfig], HttpFetcher] | None = None,
         settings_override: Settings | None = None,
         notifier_override: object | None = None,
+        sleep: Callable[[float], None] = lambda _s: None,
     ) -> TestClient:
         def fetcher(site: SiteConfig) -> HttpFetcher:
             return fetcher_for_site(site, client=fake.client(), sleep=lambda _s: None)
@@ -83,6 +84,7 @@ def make_client(
             fetcher_factory=fetcher_factory or fetcher,
             resolver=lambda _host: ["93.184.216.34"],
             notifier_factory=lambda _s: chosen,  # type: ignore[return-value,arg-type]
+            sleep=sleep,
         )
         return TestClient(app)
 
@@ -169,14 +171,72 @@ def test_recent_running_run_in_db_blocks_new_run(client: TestClient, settings: S
     assert str(running) in resp.json()["detail"]
 
 
-def test_stale_running_run_is_failed_and_replaced(client: TestClient, settings: Settings) -> None:
+def test_stale_running_run_is_failed_and_replaced(
+    client: TestClient, settings: Settings, notifier: RecordingNotifier
+) -> None:
     client.get("/runs")
     stale = _insert_running_run(settings, timedelta(hours=2))
 
     resp = client.post("/runs")
     assert resp.status_code == 202
     wait_for_run(client)
+    client.app.state.alert_thread.join(timeout=10)  # type: ignore[attr-defined]
     assert client.get(f"/runs/{stale}").json()["status"] == "failed"
+    titles = {n.title for n in notifier.sent}
+    assert f"Extracto run #{stale} was interrupted" in titles
+
+
+def start_app(client: TestClient) -> None:
+    """Run the app's startup (lifespan) and wait for its interrupted-run check."""
+    client.__enter__()
+    client.app.state.watch_thread.join(timeout=10)  # type: ignore[attr-defined]
+    assert not client.app.state.watch_thread.is_alive()  # type: ignore[attr-defined]
+    client.__exit__(None, None, None)
+
+
+def test_startup_alerts_on_run_left_unfinished(
+    make_client: Callable[..., TestClient], settings: Settings, notifier: RecordingNotifier
+) -> None:
+    make_client().get("/runs")  # creates the schema
+    orphan = _insert_running_run(settings, timedelta(hours=1))
+
+    client = make_client()
+    start_app(client)
+
+    assert client.get(f"/runs/{orphan}").json()["status"] == "failed"
+    [alert] = notifier.sent
+    assert alert.title == f"Extracto run #{orphan} was interrupted"
+    assert alert.level is NotificationLevel.ERROR
+    assert "0 of 2 sites" in alert.description
+
+
+def test_startup_waits_until_a_recent_run_goes_quiet(
+    make_client: Callable[..., TestClient],
+    settings: Settings,
+    notifier: RecordingNotifier,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    make_client().get("/runs")
+    orphan = _insert_running_run(settings, timedelta(minutes=2))
+    clock = [utcnow()]
+    monkeypatch.setattr("extracto.api.app.utcnow", lambda: clock[0])
+
+    def sleep(seconds: float) -> None:
+        assert notifier.sent == []  # not alerted while it could still be alive
+        clock[0] += timedelta(seconds=seconds) * 10
+
+    client = make_client(sleep=sleep)
+    start_app(client)
+
+    assert client.get(f"/runs/{orphan}").json()["status"] == "failed"
+    assert [n.title for n in notifier.sent] == [f"Extracto run #{orphan} was interrupted"]
+
+
+def test_startup_with_no_unfinished_runs_sends_nothing(
+    client: TestClient, notifier: RecordingNotifier
+) -> None:
+    start_app(client)
+    assert notifier.sent == []
 
 
 def test_crash_marks_run_failed_and_notifies(

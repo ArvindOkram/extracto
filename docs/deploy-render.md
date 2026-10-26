@@ -140,8 +140,10 @@ crawling, so ping it during the crawl window):
 **Size the window:** a run takes about `total pages × 3 s` (polite delay). 10 sites × 100 pages
 ≈ 50 minutes, well inside 05:00–09:50. For bigger crawls, extend the keep-awake hours.
 
-If a run dies anyway (e.g. Render restarted), it's marked `failed` after 20 minutes without
-activity and the next start works normally.
+If a run dies anyway (e.g. Render restarted or slept mid-run), it's marked `failed` once it has
+had no activity for 20 minutes, and Discord gets a "run #N was interrupted" alert. The app checks
+for this when it starts up again (the next keep-awake ping wakes it) and on the next `POST /runs`.
+Pages crawled before the stop are kept; start a new run to finish.
 
 ## 7. Day-to-day
 
